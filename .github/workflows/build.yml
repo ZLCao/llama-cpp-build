@@ -31,6 +31,9 @@ jobs:
           nvcc --version
           cmake --version
 
+      - name: Setup MSBuild
+        uses: microsoft/setup-msbuild@v2
+
       - name: CMake configure
         shell: cmd
         run: |
