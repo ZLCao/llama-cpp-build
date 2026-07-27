@@ -1,0 +1,62 @@
+name: Build llama.cpp Windows CUDA
+
+on:
+  workflow_dispatch:
+    inputs:
+      llama_cpp_ref:
+        description: 'llama.cpp 分支/tag/commit'
+        required: false
+        default: 'master'
+      cuda_arch:
+        description: 'CUDA 架构 (RTX 5060 Ti = 120)'
+        required: false
+        default: '120'
+
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+      # 👇 关键：直接 checkout 官方 llama.cpp 仓库
+      - name: Checkout llama.cpp
+        uses: actions/checkout@v4
+        with:
+          repository: ggml-org/llama.cpp        # ← 官方仓库
+          ref: ${{ github.event.inputs.llama_cpp_ref }}
+          submodules: recursive
+          path: llama.cpp                        # ← 拉到子目录，避免覆盖工作流
+
+      - name: Verify environment
+        shell: cmd
+        run: |
+          nvcc --version
+          cmake --version
+
+      - name: CMake configure
+        shell: cmd
+        run: |
+          cd llama.cpp
+          cmake -B build -G "Visual Studio 17 2022" -A x64 ^
+            -DGGML_CUDA=ON ^
+            -DCMAKE_CUDA_ARCHITECTURES=${{ github.event.inputs.cuda_arch }} ^
+            -DLLAMA_BUILD_SERVER=ON
+
+      - name: Build
+        shell: cmd
+        run: |
+          cd llama.cpp
+          cmake --build build --config Release --parallel 8
+
+      - name: Collect artifacts
+        shell: cmd
+        run: |
+          mkdir dist
+          copy llama.cpp\build\bin\Release\llama-server.exe dist\
+          copy llama.cpp\build\bin\Release\llama-cli.exe dist\
+          copy llama.cpp\build\bin\Release\*.dll dist\
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: llama-cpp-windows-cuda-${{ github.event.inputs.cuda_arch }}
+          path: dist\
+          retention-days: 30
