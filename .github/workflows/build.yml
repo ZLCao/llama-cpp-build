@@ -29,66 +29,71 @@ jobs:
       - name: Setup MSBuild
         uses: microsoft/setup-msbuild@v2
 
+      - name: Install Ninja
+        uses: seanmiddleditch/gha-setup-ninja@v5
+
+      # 👇 缓存 CUDA 安装目录
+      - name: Cache CUDA Toolkit
+        uses: actions/cache@v4
+        id: cache-cuda
+        with:
+          path: C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA\v12.9
+          key: cuda-12.9.1-windows2022-${{ runner.os }}
+          restore-keys: |
+            cuda-12.9.1-windows2022-
+
+      # 👇 只有缓存未命中时才安装
       - name: Setup CUDA Toolkit
+        if: steps.cache-cuda.outputs.cache-hit != 'true'
         uses: mjun0812/setup-cuda@v1
         with:
           version: '12.9.1'
           method: 'local'
-
-      # 👇 新增：手动修复 VS2022 + CUDA 12.9 的 BuildCustomizations 集成
-      - name: Fix CUDA VS Integration
-        shell: pwsh
-        run: |
-          $cudaPath = "C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA\v12.9"
-          $vsBuildCustomizations = "C:\Program Files\Microsoft Visual Studio\2022\Enterprise\MSBuild\Microsoft\VC\v170\BuildCustomizations"
-          
-          Write-Host "Copying CUDA MSBuild extensions to VS2022..."
-          Copy-Item "$cudaPath\extras\visual_studio_integration\MSBuildExtensions\*" `
-            -Destination $vsBuildCustomizations -Force
-          
-          # 验证复制结果
-          Get-ChildItem $vsBuildCustomizations -Filter "CUDA*" | Select-Object Name
 
       - name: Verify environment
         shell: cmd
         run: |
           echo "=== nvcc ==="
           nvcc --version
+          echo "=== ninja ==="
+          ninja --version
           echo "=== CUDA_PATH ==="
           echo %CUDA_PATH%
+          echo "=== cache hit ==="
+          echo %CACHE_HIT%
+        env:
+          CACHE_HIT: ${{ steps.cache-cuda.outputs.cache-hit }}
 
       - name: CMake configure
         shell: cmd
         run: |
           cmake -B build ^
-            -G "Visual Studio 17 2022" ^
-            -A x64 ^
+            -G Ninja ^
+            -DCMAKE_BUILD_TYPE=Release ^
             -DGGML_CUDA=ON ^
             -DCMAKE_CUDA_ARCHITECTURES=${{ github.event.inputs.cuda_arch }} ^
             -DCMAKE_CUDA_COMPILER="C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA\v12.9\bin\nvcc.exe" ^
-            -DCMAKE_GENERATOR_TOOLSET="cuda=C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA\v12.9" ^
             -DCUDA_TOOLKIT_ROOT_DIR="C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA\v12.9" ^
             -DLLAMA_BUILD_SERVER=ON ^
             -DLLAMA_BUILD_EXAMPLES=ON ^
-            -DLLAMA_BUILD_TESTS=OFF ^
-            -DCMAKE_BUILD_TYPE=Release
+            -DLLAMA_BUILD_TESTS=OFF
 
       - name: Build
         shell: cmd
         run: |
-          cmake --build build --config Release --parallel 8
+          cmake --build build --parallel 8
 
       - name: Collect artifacts
         shell: cmd
         run: |
           mkdir dist
-          copy build\bin\Release\llama-server.exe dist\
-          copy build\bin\Release\llama-cli.exe dist\
-          copy build\bin\Release\llama-bench.exe dist\
-          copy build\bin\Release\llama-gguf.exe dist\
-          copy build\bin\Release\llama-quantize.exe dist\
-          copy build\bin\Release\llama-perplexity.exe dist\
-          copy build\bin\Release\*.dll dist\
+          copy build\bin\llama-server.exe dist\
+          copy build\bin\llama-cli.exe dist\
+          copy build\bin\llama-bench.exe dist\
+          copy build\bin\llama-gguf.exe dist\
+          copy build\bin\llama-quantize.exe dist\
+          copy build\bin\llama-perplexity.exe dist\
+          copy build\bin\*.dll dist\
 
       - name: Upload build artifact
         uses: actions/upload-artifact@v4
