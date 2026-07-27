@@ -14,7 +14,7 @@ on:
 
 jobs:
   build:
-    runs-on: windows-latest
+    runs-on: windows-2022
     steps:
       # 👇 关键：直接 checkout 官方 llama.cpp 仓库
       - name: Checkout llama.cpp
