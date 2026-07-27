@@ -34,6 +34,14 @@ jobs:
       - name: Setup MSBuild
         uses: microsoft/setup-msbuild@v2
 
+      - name: Setup CUDA Toolkit
+        uses: Jimver/cuda-toolkit@v0.2
+        id: cuda-toolkit
+        with:
+          cuda: '12.8.0'
+          method: 'network'
+          sub-packages: '["nvcc", "cudart", "cublas", "cufft"]'
+
       - name: CMake configure
         shell: cmd
         run: |
