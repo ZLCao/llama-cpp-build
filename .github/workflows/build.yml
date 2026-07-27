@@ -3,71 +3,85 @@ name: Build llama.cpp Windows CUDA
 on:
   workflow_dispatch:
     inputs:
-      llama_cpp_ref:
-        description: 'llama.cpp 分支/tag/commit'
-        required: false
-        default: 'master'
       cuda_arch:
-        description: 'CUDA 架构 (RTX 5060 Ti = 120)'
+        description: 'CUDA 架构 (RTX 5060 Ti = 120, RTX 4090 = 89, RTX 3090 = 86)'
         required: false
         default: '120'
+      llama_cpp_ref:
+        description: 'llama.cpp 分支/tag/commit (默认 master)'
+        required: false
+        default: 'master'
 
 jobs:
-  build:
+  build-windows-cuda:
     runs-on: windows-2022
     steps:
-      # 👇 关键：直接 checkout 官方 llama.cpp 仓库
+      # 1. 拉取官方 llama.cpp 源码（递归子模块）
       - name: Checkout llama.cpp
         uses: actions/checkout@v4
         with:
-          repository: ggml-org/llama.cpp        # ← 官方仓库
+          repository: ggml-org/llama.cpp
           ref: ${{ github.event.inputs.llama_cpp_ref }}
           submodules: recursive
-          path: llama.cpp                        # ← 拉到子目录，避免覆盖工作流
 
-      - name: Verify environment
-        shell: cmd
-        run: |
-          nvcc --version
-          cmake --version
-
+      # 2. 激活 MSBuild 环境（让 CMake 找到 VS2022）
       - name: Setup MSBuild
         uses: microsoft/setup-msbuild@v2
 
+      # 3. 安装 CUDA Toolkit 12.9.1（支持 Blackwell sm_120）
       - name: Setup CUDA Toolkit
-        uses: Jimver/cuda-toolkit@v0.2
-        id: cuda-toolkit
+        uses: Jimver/cuda-toolkit@v0.2.26
         with:
-          cuda: '12.8.0'
+          cuda: '12.9.1'
           method: 'network'
-          sub-packages: '["nvcc", "cudart", "cublas", "cufft"]'
+          sub-packages: '["nvcc", "cudart", "cublas", "cufft", "visual_studio_integration"]'
 
+      # 4. 验证环境
+      - name: Verify environment
+        shell: cmd
+        run: |
+          echo "=== nvcc ==="
+          nvcc --version
+          echo "=== CUDA_PATH ==="
+          echo %CUDA_PATH%
+
+      # 5. CMake 配置（核心编译参数）
       - name: CMake configure
         shell: cmd
         run: |
-          cd llama.cpp
-          cmake -B build -G "Visual Studio 17 2022" -A x64 ^
+          cmake -B build ^
+            -G "Visual Studio 17 2022" ^
+            -A x64 ^
             -DGGML_CUDA=ON ^
             -DCMAKE_CUDA_ARCHITECTURES=${{ github.event.inputs.cuda_arch }} ^
-            -DLLAMA_BUILD_SERVER=ON
+            -DLLAMA_BUILD_SERVER=ON ^
+            -DLLAMA_BUILD_EXAMPLES=ON ^
+            -DLLAMA_BUILD_TESTS=OFF ^
+            -DCMAKE_BUILD_TYPE=Release
 
+      # 6. 编译
       - name: Build
         shell: cmd
         run: |
-          cd llama.cpp
           cmake --build build --config Release --parallel 8
 
+      # 7. 收集必要文件到 dist\ 目录
       - name: Collect artifacts
         shell: cmd
         run: |
           mkdir dist
-          copy llama.cpp\build\bin\Release\llama-server.exe dist\
-          copy llama.cpp\build\bin\Release\llama-cli.exe dist\
-          copy llama.cpp\build\bin\Release\*.dll dist\
+          copy build\bin\Release\llama-server.exe dist\
+          copy build\bin\Release\llama-cli.exe dist\
+          copy build\bin\Release\llama-bench.exe dist\
+          copy build\bin\Release\llama-gguf.exe dist\
+          copy build\bin\Release\llama-quantize.exe dist\
+          copy build\bin\Release\llama-perplexity.exe dist\
+          copy build\bin\Release\*.dll dist\
 
-      - name: Upload artifact
+      # 8. 上传 Artifact
+      - name: Upload build artifact
         uses: actions/upload-artifact@v4
         with:
-          name: llama-cpp-windows-cuda-${{ github.event.inputs.cuda_arch }}
+          name: llama-cpp-windows-cuda-arch${{ github.event.inputs.cuda_arch }}
           path: dist\
           retention-days: 30
