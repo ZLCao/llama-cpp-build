@@ -12,11 +12,14 @@ on:
         required: false
         default: 'master'
 
+# 👇 顶层 env：强制所有 Action 运行在 Node24，消除 Node20 弃用警告
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+
 jobs:
   build-windows-cuda:
     runs-on: windows-2022
     steps:
-      # 1. 拉取官方 llama.cpp 源码（递归子模块）
       - name: Checkout llama.cpp
         uses: actions/checkout@v4
         with:
@@ -24,19 +27,15 @@ jobs:
           ref: ${{ github.event.inputs.llama_cpp_ref }}
           submodules: recursive
 
-      # 2. 激活 MSBuild 环境（让 CMake 找到 VS2022）
       - name: Setup MSBuild
         uses: microsoft/setup-msbuild@v2
 
-      # 3. 安装 CUDA Toolkit 12.9.1（支持 Blackwell sm_120）
       - name: Setup CUDA Toolkit
-        uses: Jimver/cuda-toolkit@v0.2.26
+        uses: mjun0812/setup-cuda@v1
         with:
-          cuda: '12.9.1'
+          version: '12.9'
           method: 'network'
-          sub-packages: '["nvcc", "cudart", "cublas", "cufft", "visual_studio_integration"]'
 
-      # 4. 验证环境
       - name: Verify environment
         shell: cmd
         run: |
@@ -45,7 +44,6 @@ jobs:
           echo "=== CUDA_PATH ==="
           echo %CUDA_PATH%
 
-      # 5. CMake 配置（核心编译参数）
       - name: CMake configure
         shell: cmd
         run: |
@@ -59,13 +57,11 @@ jobs:
             -DLLAMA_BUILD_TESTS=OFF ^
             -DCMAKE_BUILD_TYPE=Release
 
-      # 6. 编译
       - name: Build
         shell: cmd
         run: |
           cmake --build build --config Release --parallel 8
 
-      # 7. 收集必要文件到 dist\ 目录
       - name: Collect artifacts
         shell: cmd
         run: |
@@ -78,7 +74,6 @@ jobs:
           copy build\bin\Release\llama-perplexity.exe dist\
           copy build\bin\Release\*.dll dist\
 
-      # 8. 上传 Artifact
       - name: Upload build artifact
         uses: actions/upload-artifact@v4
         with:
