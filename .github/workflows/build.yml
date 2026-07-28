@@ -10,7 +10,7 @@ on:
       llama_cpp_ref:
         description: 'llama.cpp 分支/tag/commit'
         required: false
-        default: 'b9233'
+        default: 'master'
 
 env:
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
@@ -29,7 +29,6 @@ jobs:
       - name: Setup MSBuild
         uses: microsoft/setup-msbuild@v2
 
-      # 👇 缓存 1：CUDA Toolkit 12.9.1
       - name: Cache CUDA Toolkit
         uses: actions/cache@v4
         id: cache-cuda
@@ -46,33 +45,23 @@ jobs:
           version: '12.9.1'
           method: 'local'
 
-      # 👇 动态下载并静默安装 OpenSSL 3 Light
+      # 👇 修正：URL 使用下划线 Win64OpenSSL_Light-3_5_2.exe
       - name: Install OpenSSL 3 (Light)
         shell: pwsh
         run: |
-          # 从 Shining Light 官方哈希表动态获取最新 Win64 OpenSSL 3 Light 安装包 URL
-          $json = (Invoke-WebRequest "https://raw.githubusercontent.com/slproweb/opensslhashes/master/win32_openssl_hashes.json" -UseBasicParsing).Content
-          $data = $json | ConvertFrom-Json
-          $entry = $data.files.PSObject.Properties | Where-Object { $_.Name -match "Win64OpenSSL-Light-.*\.exe$" } | Select-Object -Last 1
-          $url = $entry.Value.url
-          if (-not $url) {
-            # fallback：硬编码已知可用 URL
-            $url = "https://slproweb.com/download/Win64OpenSSL-Light-3_5_2.exe"
-          }
+          $url = "https://slproweb.com/download/Win64OpenSSL_Light-3_5_2.exe"
           Write-Host "Downloading OpenSSL from: $url"
           Invoke-WebRequest -OutFile Win64OpenSSL-Light.exe $url -UseBasicParsing
           Start-Process -FilePath ".\Win64OpenSSL-Light.exe" -ArgumentList "/silent","/sp-","/suppressmsgboxes","/DIR=C:\OpenSSL-Win64" -Wait
           
-          # 验证 DLL 存在
           if (Test-Path "C:\OpenSSL-Win64\bin\libssl-3-x64.dll") {
             Write-Host "✅ OpenSSL 3 DLLs installed successfully"
-            Get-ChildItem "C:\OpenSSL-Win64\bin\" -Filter "*.dll" | Select-Object Name
+            Get-ChildItem "C:\OpenSSL-Win64\bin\" -Filter "lib*.dll" | Select-Object Name
           } else {
             Write-Error "❌ OpenSSL DLLs not found after installation"
             exit 1
           }
 
-      # 👇 缓存 2：build 目录（编译产物）
       - name: Cache build directory
         uses: actions/cache@v4
         id: cache-build
@@ -88,20 +77,6 @@ jobs:
           $cudaPath = "C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA\v12.9"
           $vsBuildCustomizations = "C:\Program Files\Microsoft Visual Studio\2022\Enterprise\MSBuild\Microsoft\VC\v170\BuildCustomizations"
           Copy-Item "$cudaPath\extras\visual_studio_integration\MSBuildExtensions\*" -Destination $vsBuildCustomizations -Force
-          Write-Host "CUDA MSBuild extensions copied"
-
-      - name: Verify environment
-        shell: cmd
-        run: |
-          echo === nvcc ===
-          nvcc --version
-          echo === CUDA_PATH ===
-          echo %CUDA_PATH%
-          echo === cache hit ===
-          echo cuda=%CUDA_HIT%  build=%BUILD_HIT%
-        env:
-          CUDA_HIT: ${{ steps.cache-cuda.outputs.cache-hit }}
-          BUILD_HIT: ${{ steps.cache-build.outputs.cache-hit }}
 
       - name: CMake configure
         shell: cmd
@@ -124,54 +99,36 @@ jobs:
         run: |
           cmake --build build --config Release --parallel 8
 
-      # 👇 收集所有依赖，一次性打进 dist\
       - name: Collect artifacts
         shell: pwsh
         run: |
           New-Item -ItemType Directory -Force -Path dist | Out-Null
-
-          # llama.cpp 编译产物
-          $bins = @(
-            "llama-server.exe","llama-cli.exe","llama-bench.exe",
-            "llama-gguf.exe","llama-quantize.exe","llama-perplexity.exe"
-          )
+          $bins = @("llama-server.exe","llama-cli.exe","llama-bench.exe","llama-gguf.exe","llama-quantize.exe","llama-perplexity.exe")
           foreach ($bin in $bins) {
             $src = "build\bin\Release\$bin"
             if (Test-Path $src) { Copy-Item $src -Destination dist\ }
           }
           Copy-Item "build\bin\Release\*.dll" -Destination dist\
 
-          # CUDA 12.9.1 运行时 DLL
           $cudaBin = "C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA\v12.9\bin"
-          $cudaDlls = @(
-            "cudart64_12.dll","cublas64_12.dll","cublasLt64_12.dll",
-            "cufft64_11.dll","curand64_10.dll","cusolver64_11.dll",
-            "cusparse64_12.dll","nvrtc64_12.dll"
-          )
+          $cudaDlls = @("cudart64_12.dll","cublas64_12.dll","cublasLt64_12.dll","cufft64_11.dll","curand64_10.dll","cusolver64_11.dll","cusparse64_12.dll","nvrtc64_12.dll")
           foreach ($dll in $cudaDlls) {
             $src = Join-Path $cudaBin $dll
-            if (Test-Path $src) {
-              Copy-Item $src -Destination dist\
-              Write-Host "✅ $dll"
-            } else {
-              Write-Warning "⚠️ Missing: $dll"
-            }
+            if (Test-Path $src) { Copy-Item $src -Destination dist\ }
           }
 
-          # OpenSSL 3 DLL
           $sslDir = "C:\OpenSSL-Win64\bin"
           if ((Test-Path "$sslDir\libssl-3-x64.dll") -and (Test-Path "$sslDir\libcrypto-3-x64.dll")) {
             Copy-Item "$sslDir\libssl-3-x64.dll" -Destination dist\
             Copy-Item "$sslDir\libcrypto-3-x64.dll" -Destination dist\
-            Write-Host "✅ OpenSSL 3 DLLs copied from $sslDir"
+            Write-Host "✅ OpenSSL 3 DLLs copied"
           } else {
-            Write-Error "❌ OpenSSL 3 DLLs not found in $sslDir"
+            Write-Error "❌ OpenSSL 3 DLLs not found"
             exit 1
           }
 
-          # 列出 dist 目录完整内容
           Write-Host "`n=== dist contents ==="
-          Get-ChildItem dist | Select-Object Name, @{N='SizeKB';E={[int]($_.Length/1KB)}} | Format-Table -AutoSize
+          Get-ChildItem dist | Select-Object Name | Format-Table -AutoSize
 
       - name: Upload build artifact
         uses: actions/upload-artifact@v4
