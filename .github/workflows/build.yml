@@ -8,9 +8,9 @@ on:
         required: false
         default: '120'
       llama_cpp_ref:
-        description: 'llama.cpp 分支/tag/commit (默认 master)'
+        description: 'llama.cpp 分支/tag/commit'
         required: false
-        default: 'master'
+        default: 'b9233'
 
 env:
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
@@ -29,7 +29,7 @@ jobs:
       - name: Setup MSBuild
         uses: microsoft/setup-msbuild@v2
 
-      # 👇 新增：缓存 CUDA 安装目录
+      # 👇 缓存 1：CUDA Toolkit 12.9.1
       - name: Cache CUDA Toolkit
         uses: actions/cache@v4
         id: cache-cuda
@@ -39,7 +39,6 @@ jobs:
           restore-keys: |
             cuda-12.9.1-windows2022-
 
-      # 👇 只有缓存未命中时才安装 CUDA
       - name: Setup CUDA Toolkit
         if: steps.cache-cuda.outputs.cache-hit != 'true'
         uses: mjun0812/setup-cuda@v1
@@ -47,18 +46,29 @@ jobs:
           version: '12.9.1'
           method: 'local'
 
+      # 👇 安装 OpenSSL 3.x（Chocolatey 默认就是 3.5.2）
+      - name: Install OpenSSL 3
+        shell: pwsh
+        run: |
+          choco install openssl -y --version=3.5.2
+          # DLL 默认装到 C:\Program Files\OpenSSL-Win64\bin\
+
+      # 👇 缓存 2：build 目录（编译产物）
+      - name: Cache build directory
+        uses: actions/cache@v4
+        id: cache-build
+        with:
+          path: build
+          key: build-${{ github.event.inputs.llama_cpp_ref }}-cuda${{ github.event.inputs.cuda_arch }}-${{ runner.os }}-${{ hashFiles('llama.cpp/CMakeLists.txt', 'llama.cpp/ggml/src/ggml-cuda/CMakeLists.txt') }}
+          restore-keys: |
+            build-${{ github.event.inputs.llama_cpp_ref }}-cuda${{ github.event.inputs.cuda_arch }}-${{ runner.os }}-
+
       - name: Fix CUDA VS Integration
         shell: pwsh
         run: |
           $cudaPath = "C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA\v12.9"
           $vsBuildCustomizations = "C:\Program Files\Microsoft Visual Studio\2022\Enterprise\MSBuild\Microsoft\VC\v170\BuildCustomizations"
-          
-          Write-Host "Copying CUDA MSBuild extensions to VS2022..."
-          Copy-Item "$cudaPath\extras\visual_studio_integration\MSBuildExtensions\*" `
-            -Destination $vsBuildCustomizations -Force
-          
-          # 验证复制结果
-          Get-ChildItem $vsBuildCustomizations -Filter "CUDA*" | Select-Object Name
+          Copy-Item "$cudaPath\extras\visual_studio_integration\MSBuildExtensions\*" -Destination $vsBuildCustomizations -Force
 
       - name: Verify environment
         shell: cmd
@@ -67,10 +77,13 @@ jobs:
           nvcc --version
           echo === CUDA_PATH ===
           echo %CUDA_PATH%
+          echo === OpenSSL DLL search ===
+          dir "C:\Program Files\OpenSSL-Win64\bin\libssl-3-x64.dll"
           echo === cache hit ===
-          echo %CACHE_HIT%
+          echo cuda=%CUDA_HIT%  build=%BUILD_HIT%
         env:
-          CACHE_HIT: ${{ steps.cache-cuda.outputs.cache-hit }}
+          CUDA_HIT: ${{ steps.cache-cuda.outputs.cache-hit }}
+          BUILD_HIT: ${{ steps.cache-build.outputs.cache-hit }}
 
       - name: CMake configure
         shell: cmd
@@ -93,17 +106,68 @@ jobs:
         run: |
           cmake --build build --config Release --parallel 8
 
+      # 👇 收集所有依赖，一次性打进 dist\
       - name: Collect artifacts
-        shell: cmd
+        shell: pwsh
         run: |
-          mkdir dist
-          copy build\bin\Release\llama-server.exe dist\
-          copy build\bin\Release\llama-cli.exe dist\
-          copy build\bin\Release\llama-bench.exe dist\
-          copy build\bin\Release\llama-gguf.exe dist\
-          copy build\bin\Release\llama-quantize.exe dist\
-          copy build\bin\Release\llama-perplexity.exe dist\
-          copy build\bin\Release\*.dll dist\
+          New-Item -ItemType Directory -Force -Path dist | Out-Null
+
+          # llama.cpp 编译产物
+          Copy-Item "build\bin\Release\llama-server.exe" -Destination dist\
+          Copy-Item "build\bin\Release\llama-cli.exe" -Destination dist\
+          Copy-Item "build\bin\Release\llama-bench.exe" -Destination dist\
+          Copy-Item "build\bin\Release\llama-gguf.exe" -Destination dist\
+          Copy-Item "build\bin\Release\llama-quantize.exe" -Destination dist\
+          Copy-Item "build\bin\Release\llama-perplexity.exe" -Destination dist\
+          Copy-Item "build\bin\Release\*.dll" -Destination dist\
+
+          # 👇 CUDA 12.9.1 运行时 DLL（官方组件列表）
+          $cudaBin = "C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA\v12.9\bin"
+          $cudaDlls = @(
+            "cudart64_12.dll",
+            "cublas64_12.dll",
+            "cublasLt64_12.dll",
+            "cufft64_11.dll",
+            "curand64_10.dll",
+            "cusolver64_11.dll",
+            "cusparse64_12.dll",
+            "nvrtc64_12.dll"
+          )
+          foreach ($dll in $cudaDlls) {
+            $src = Join-Path $cudaBin $dll
+            if (Test-Path $src) {
+              Copy-Item $src -Destination dist\
+              Write-Host "Copied $dll"
+            } else {
+              Write-Warning "Missing: $dll"
+            }
+          }
+
+          # 👇 OpenSSL 3.x DLL（动态定位安装路径）
+          $sslDirs = @(
+            "C:\Program Files\OpenSSL-Win64\bin",
+            "C:\ProgramData\chocolatey\lib\openssl\tools"
+          )
+          $sslFound = $false
+          foreach ($dir in $sslDirs) {
+            $libssl = Join-Path $dir "libssl-3-x64.dll"
+            $libcrypto = Join-Path $dir "libcrypto-3-x64.dll"
+            if ((Test-Path $libssl) -and (Test-Path $libcrypto)) {
+              Copy-Item $libssl -Destination dist\
+              Copy-Item $libcrypto -Destination dist\
+              Write-Host "Copied OpenSSL 3 DLLs from $dir"
+              $sslFound = $true
+              break
+            }
+          }
+          if (-not $sslFound) {
+            Write-Error "OpenSSL 3 DLLs not found in expected paths!"
+            exit 1
+          }
+
+          # 列出 dist 目录内容
+          Write-Host "`n=== dist contents ==="
+          Get-ChildItem dist | Select-Object Name, Length
 
       - name: Upload build artifact
         uses: actions/upload-artifact@v4
