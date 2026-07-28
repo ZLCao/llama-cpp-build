@@ -45,22 +45,47 @@ jobs:
           version: '12.9.1'
           method: 'local'
 
-      # 👇 修正：URL 使用下划线 Win64OpenSSL_Light-3_5_2.exe
-      - name: Install OpenSSL 3 (Light)
+      # 👇 OpenSSL 3 Light MSI（带 fallback 到完整版 EXE）
+      - name: Install OpenSSL 3 (Light MSI)
         shell: pwsh
         run: |
-          $url = "https://slproweb.com/download/Win64OpenSSL_Light-3_5_2.exe"
-          Write-Host "Downloading OpenSSL from: $url"
-          Invoke-WebRequest -OutFile Win64OpenSSL-Light.exe $url -UseBasicParsing
-          Start-Process -FilePath ".\Win64OpenSSL-Light.exe" -ArgumentList "/silent","/sp-","/suppressmsgboxes","/DIR=C:\OpenSSL-Win64" -Wait
+          $ErrorActionPreference = "Stop"
+          $msiUrl = "https://slproweb.com/download/Win64OpenSSL_Light-3_5_2.msi"
+          $msiPath = "Win64OpenSSL-Light.msi"
           
-          if (Test-Path "C:\OpenSSL-Win64\bin\libssl-3-x64.dll") {
-            Write-Host "✅ OpenSSL 3 DLLs installed successfully"
-            Get-ChildItem "C:\OpenSSL-Win64\bin\" -Filter "lib*.dll" | Select-Object Name
-          } else {
-            Write-Error "❌ OpenSSL DLLs not found after installation"
-            exit 1
+          try {
+            Write-Host "Trying MSI: $msiUrl"
+            Invoke-WebRequest -OutFile $msiPath $msiUrl -UseBasicParsing -TimeoutSec 60
+            Write-Host "✅ MSI downloaded"
           }
+          catch {
+            Write-Warning "MSI download failed: $_"
+            $exeUrl = "https://slproweb.com/download/Win64OpenSSL-3_5_2.exe"
+            Write-Host "Trying fallback EXE: $exeUrl"
+            Invoke-WebRequest -OutFile "Win64OpenSSL.exe" $exeUrl -UseBasicParsing -TimeoutSec 60
+            Write-Host "✅ EXE downloaded"
+            Start-Process -FilePath ".\Win64OpenSSL.exe" -ArgumentList "/VERYSILENT","/SUPPRESSMSGBOXES","/NORESTART","/SP-","/DIR=C:\OpenSSL-Win64" -Wait
+          }
+          
+          if (Test-Path $msiPath) {
+            Write-Host "Installing via msiexec..."
+            Start-Process -FilePath "msiexec.exe" -ArgumentList "/i","$msiPath","/quiet","/norestart","INSTALLDIR=C:\OpenSSL-Win64" -Wait
+          }
+          
+          $sslDir = "C:\OpenSSL-Win64\bin"
+          if (-not ((Test-Path "$sslDir\libssl-3-x64.dll") -and (Test-Path "$sslDir\libcrypto-3-x64.dll"))) {
+            $defaultDir = "C:\Program Files\OpenSSL-Win64\bin"
+            if (Test-Path "$defaultDir\libssl-3-x64.dll") {
+              if (-not (Test-Path $sslDir)) { New-Item -ItemType Directory -Path $sslDir -Force | Out-Null }
+              Copy-Item "$defaultDir\libssl-3-x64.dll" -Destination $sslDir
+              Copy-Item "$defaultDir\libcrypto-3-x64.dll" -Destination $sslDir
+            }
+            else {
+              Write-Error "❌ OpenSSL DLLs not found after installation"
+              exit 1
+            }
+          }
+          Write-Host "✅ OpenSSL 3 DLLs ready in $sslDir"
 
       - name: Cache build directory
         uses: actions/cache@v4
@@ -121,9 +146,10 @@ jobs:
           if ((Test-Path "$sslDir\libssl-3-x64.dll") -and (Test-Path "$sslDir\libcrypto-3-x64.dll")) {
             Copy-Item "$sslDir\libssl-3-x64.dll" -Destination dist\
             Copy-Item "$sslDir\libcrypto-3-x64.dll" -Destination dist\
-            Write-Host "✅ OpenSSL 3 DLLs copied"
-          } else {
-            Write-Error "❌ OpenSSL 3 DLLs not found"
+            Write-Host "✅ OpenSSL 3 DLLs copied to dist\"
+          }
+          else {
+            Write-Error "❌ OpenSSL 3 DLLs not found in $sslDir"
             exit 1
           }
 
