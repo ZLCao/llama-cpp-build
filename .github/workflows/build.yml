@@ -45,47 +45,55 @@ jobs:
           version: '12.9.1'
           method: 'local'
 
-      # 👇 FireDaemon OpenSSL 3.5 LTS
-      - name: Install OpenSSL 3.5 LTS
+      # 👇 FireDaemon OpenSSL 3.5.7 LTS 稳定直链
+      - name: Install OpenSSL 3.5.7 LTS (FireDaemon)
         shell: pwsh
         run: |
           $ErrorActionPreference = "Stop"
-          $url = "https://www.firedaemon.com/get-openssl?version=3.5.7"
-          Write-Host "Downloading OpenSSL 3.5 LTS from: $url"
+          $url = "https://download.firedaemon.com/FireDaemon-OpenSSL/FireDaemon-OpenSSL-x64-3.5.7.exe"
+          $exePath = "FireDaemon-OpenSSL-x64-3.5.7.exe"
           
-          try {
-            Invoke-WebRequest -Uri $url -UseBasicParsing -MaximumRedirection 10 -OutFile OpenSSL-3.5-LTS.exe -TimeoutSec 120
-            Write-Host "✅ Downloaded EXE"
+          Write-Host "Downloading OpenSSL 3.5.7 LTS from: $url"
+          Invoke-WebRequest -Uri $url -OutFile $exePath -UseBasicParsing -TimeoutSec 180
+          
+          $fileInfo = Get-Item $exePath
+          Write-Host "Downloaded file size: $($fileInfo.Length) bytes"
+          if ($fileInfo.Length -lt 1MB) {
+            Write-Error "❌ Downloaded file too small, likely not a valid EXE"
+            $bytes = Get-Content $exePath -Encoding Byte -TotalCount 16
+            Write-Host "File magic bytes: $($bytes -join ',')"
+            exit 1
           }
-          catch {
-            Write-Warning "EXE download failed: $_"
-            # Fallback: 直接尝试 slproweb 的 3.5.6（CSDN 确认的可用直链）
-            $fallback = "https://slproweb.com/download/Win64OpenSSL-3_5_6.exe"
-            Write-Host "Trying fallback: $fallback"
-            Invoke-WebRequest -Uri $fallback -UseBasicParsing -OutFile OpenSSL-3.5-LTS.exe -TimeoutSec 120
+          
+          Write-Host "Installing silently..."
+          $proc = Start-Process -FilePath $exePath `
+            -ArgumentList "/exenoui","/qn","/norestart","APPDIR=`"C:\OpenSSL-Win64`"","ADJUSTSYSTEMPATHENV=yes" `
+            -Wait -PassThru
+          
+          if ($proc.ExitCode -ne 0) {
+            Write-Warning "Installer exited with code $($proc.ExitCode)"
           }
           
-          # 静默安装
-          Start-Process -FilePath ".\OpenSSL-3.5-LTS.exe" `
-            -ArgumentList "/VERYSILENT","/SUPPRESSMSGBOXES","/NORESTART","/SP-","APPDIR=C:\OpenSSL-Win64" `
-            -Wait
-          
-          # 验证 DLL
           $sslDir = "C:\OpenSSL-Win64\bin"
           if (-not (Test-Path "$sslDir\libssl-3-x64.dll")) {
             $defaultDir = "C:\Program Files\FireDaemon OpenSSL 3\bin"
             if (Test-Path "$defaultDir\libssl-3-x64.dll") {
-              if (-not (Test-Path $sslDir)) { New-Item -ItemType Directory -Path $sslDir -Force | Out-Null }
+              Write-Host "Copying from default installation path"
+              if (-not (Test-Path $sslDir)) { 
+                New-Item -ItemType Directory -Path $sslDir -Force | Out-Null 
+              }
               Copy-Item "$defaultDir\libssl-3-x64.dll" -Destination $sslDir
               Copy-Item "$defaultDir\libcrypto-3-x64.dll" -Destination $sslDir
             }
             else {
-              Write-Error "❌ OpenSSL DLLs not found"
-              Get-ChildItem "C:\Program Files\FireDaemon OpenSSL 3\" -Recurse -Filter "libssl*.dll" | Select-Object FullName
+              Write-Error "❌ OpenSSL DLLs not found after installation"
+              Get-ChildItem "C:\Program Files\FireDaemon OpenSSL 3\" -Recurse -Filter "libssl*.dll" -ErrorAction SilentlyContinue | Select-Object FullName
+              Get-ChildItem "C:\OpenSSL-Win64\" -Recurse -Filter "*.dll" -ErrorAction SilentlyContinue | Select-Object FullName
               exit 1
             }
           }
-          Write-Host "✅ OpenSSL 3.5 LTS ready in $sslDir"
+          
+          Write-Host "✅ OpenSSL 3.5.7 LTS DLLs ready:"
           Get-ChildItem $sslDir -Filter "lib*.dll" | Select-Object Name
 
       - name: Cache build directory
@@ -136,7 +144,6 @@ jobs:
           }
           Copy-Item "build\bin\Release\*.dll" -Destination dist\
 
-          # CUDA 12.9.1 运行时 DLL
           $cudaBin = "C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA\v12.9\bin"
           $cudaDlls = @("cudart64_12.dll","cublas64_12.dll","cublasLt64_12.dll","cufft64_11.dll","curand64_10.dll","cusolver64_11.dll","cusparse64_12.dll","nvrtc64_12.dll")
           foreach ($dll in $cudaDlls) {
@@ -144,7 +151,6 @@ jobs:
             if (Test-Path $src) { Copy-Item $src -Destination dist\ }
           }
 
-          # OpenSSL 3.5 LTS DLL（FireDaemon）
           $sslDir = "C:\OpenSSL-Win64\bin"
           if (-not (Test-Path "$sslDir\libssl-3-x64.dll")) {
             $sslDir = "C:\Program Files\FireDaemon OpenSSL 3\bin"
@@ -152,7 +158,7 @@ jobs:
           if ((Test-Path "$sslDir\libssl-3-x64.dll") -and (Test-Path "$sslDir\libcrypto-3-x64.dll")) {
             Copy-Item "$sslDir\libssl-3-x64.dll" -Destination dist\
             Copy-Item "$sslDir\libcrypto-3-x64.dll" -Destination dist\
-            Write-Host "✅ OpenSSL 3.5 LTS DLLs copied from $sslDir"
+            Write-Host "✅ OpenSSL 3.5.7 LTS DLLs copied from $sslDir"
           }
           else {
             Write-Error "❌ OpenSSL 3 DLLs not found"
